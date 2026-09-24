@@ -1,0 +1,28 @@
+[package]
+name = "couch-webos"
+version = "0.1.0-pre1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "LG webOS TV integration package for Couch"
+repository = "https://github.com/Couch-OS/couch-integration-webos"
+
+[dependencies]
+couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "d3ddafe07b2d10f3e113e225388ba3017f75e025" }
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "d3ddafe07b2d10f3e113e225388ba3017f75e025", features = ["tls"] }
+base64 = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+url = "2"
+
+[dev-dependencies]
+couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "d3ddafe07b2d10f3e113e225388ba3017f75e025", features = ["testing"] }
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "d3ddafe07b2d10f3e113e225388ba3017f75e025", features = ["testing", "tls"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

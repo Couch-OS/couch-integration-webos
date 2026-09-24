@@ -1,0 +1,76 @@
+name: Client admission
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webos-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Validate immutable SDK pin and package metadata
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re
+
+          cargo = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          revisions = re.findall(r'couch-(?:plugin|sdk).*?rev = "([0-9a-f]{40})"', cargo)
+          assert revisions and len(set(revisions)) == 1
+
+          integration = json.loads(pathlib.Path("integration.json").read_text())
+          plugin = json.loads(pathlib.Path("plugin.json").read_text())
+          assert set(integration) == {
+              "schema", "protocol_version", "id", "tier", "synthetic",
+              "cargo_manifest", "cargo_package", "binary", "manifest",
+          }
+          assert integration["protocol_version"] == 3
+          assert plugin["protocol_version"] == plugin["min_core_protocol_version"] == 3
+          assert integration["id"] == plugin["id"] == "webos"
+          assert integration["binary"] == "couch-plugin-webos"
+          assert plugin["executable"] == "bin/couch-plugin-webos"
+          PY
+      - run: cargo fmt -- --check
+      - run: cargo test --locked --all-targets
+
+  armv7:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf
+      - name: Check out Couch tooling at the pinned SDK revision
+        run: |
+          revision=$(python3 - <<'PY'
+          import pathlib, re
+          cargo = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          print(re.search(r'couch-sdk.*?rev = "([0-9a-f]{40})"', cargo).group(1))
+          PY
+          )
+          git init -q "$RUNNER_TEMP/couch"
+          git -C "$RUNNER_TEMP/couch" fetch -q --depth 1 https://github.com/Couch-OS/couch.git "$revision"
+          git -C "$RUNNER_TEMP/couch" checkout -q FETCH_HEAD
+      - name: Build the static ARMv7 package binary
+        run: |
+          source=$PWD
+          cd "$RUNNER_TEMP/couch"
+          tools/fetch-zig.sh
+          . tools/arm-cc-env.sh
+          cd "$source"
+          cargo build --locked --release --target armv7-unknown-linux-musleabihf --bin couch-plugin-webos
+          file target/armv7-unknown-linux-musleabihf/release/couch-plugin-webos | grep -q 'statically linked'

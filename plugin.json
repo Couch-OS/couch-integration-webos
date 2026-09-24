@@ -1,0 +1,58 @@
+{
+  "protocol_version": 3,
+  "min_core_protocol_version": 3,
+  "id": "webos",
+  "label": "LG webOS TV",
+  "version": "0.1.0_pre1",
+  "executable": "bin/couch-plugin-webos",
+  "capabilities": [
+    {"id": "power-off", "label": "Power off"},
+    {"id": "volume-up", "label": "Volume up"},
+    {"id": "volume-down", "label": "Volume down"},
+    {"id": "mute", "label": "Mute"},
+    {"id": "mute-on", "label": "Mute on"},
+    {"id": "mute-off", "label": "Mute off"},
+    {"id": "up", "label": "Up"},
+    {"id": "down", "label": "Down"},
+    {"id": "left", "label": "Left"},
+    {"id": "right", "label": "Right"},
+    {"id": "ok", "label": "OK"},
+    {"id": "back", "label": "Back"},
+    {"id": "home", "label": "Home"},
+    {"id": "menu", "label": "Menu"},
+    {"id": "red", "label": "Red"},
+    {"id": "green", "label": "Green"},
+    {"id": "yellow", "label": "Yellow"},
+    {"id": "blue", "label": "Blue"},
+    {"id": "channel-up", "label": "Channel up"},
+    {"id": "channel-down", "label": "Channel down"},
+    {"id": "play", "label": "Play"},
+    {"id": "pause", "label": "Pause"},
+    {"id": "stop", "label": "Stop"},
+    {"id": "rewind", "label": "Rewind"},
+    {"id": "fast-forward", "label": "Fast forward"}
+  ],
+  "settings": [
+    {
+      "id": "url",
+      "label": "TV address (wss://ADDRESS:3001/)",
+      "kind": "text",
+      "required": true
+    }
+  ],
+  "supports_inputs": true,
+  "presentation": [
+    {"kind": "command_group", "title": "Power", "commands": ["power-off"]},
+    {"kind": "command_group", "title": "Navigation", "commands": ["up", "down", "left", "right", "ok", "back", "home", "menu"]},
+    {"kind": "command_group", "title": "Playback", "commands": ["play", "pause", "stop", "rewind", "fast-forward"]},
+    {"kind": "command_group", "title": "Volume", "commands": ["volume-up", "volume-down", "mute"]},
+    {"kind": "toggle", "label": "Mute", "state": "muted", "on": "mute-on", "off": "mute-off"},
+    {"kind": "status_text", "label": "Volume", "field": "volume"},
+    {"kind": "input_selector", "label": "Input"}
+  ],
+  "pairing": {
+    "required": true,
+    "max_seconds": 90
+  },
+  "keep_alive": true
+}
