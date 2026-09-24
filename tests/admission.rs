@@ -2,8 +2,9 @@
 //! loopback SSAP television, protocol-3 pairing, then command/status/inputs.
 
 use couch_plugin::{
-    testing::{self, Adapter, Package},
-    PairStep,
+    testing::{self, Adapter, FakeDevice, Package},
+    testing_v3::{self, PairingCase, PairingScenario},
+    PairStep, Request,
 };
 use serde_json::{json, Value};
 use std::{
@@ -33,7 +34,7 @@ struct FakeTv {
 }
 
 impl FakeTv {
-    fn start() -> Self {
+    fn start(scenario: PairingScenario) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -48,7 +49,7 @@ impl FakeTv {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
                         let log = shared_log.clone();
-                        clients.push(thread::spawn(move || serve(stream, log)));
+                        clients.push(thread::spawn(move || serve(stream, log, scenario)));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -67,7 +68,9 @@ impl FakeTv {
             thread: Some(thread),
         }
     }
+}
 
+impl FakeDevice for FakeTv {
     fn settings(&self) -> Value {
         json!({"url": format!("ws://{}/", self.address)})
     }
@@ -102,7 +105,7 @@ fn reply(socket: &mut WebSocket<TcpStream>, request: &Value, payload: Value) {
         .unwrap();
 }
 
-fn serve(stream: TcpStream, log: Arc<Mutex<Vec<String>>>) {
+fn serve(stream: TcpStream, log: Arc<Mutex<Vec<String>>>, scenario: PairingScenario) {
     let Ok(mut socket) = tungstenite::accept(stream) else {
         return;
     };
@@ -133,6 +136,23 @@ fn serve(stream: TcpStream, log: Arc<Mutex<Vec<String>>>) {
     log.lock().unwrap().push("register".into());
     if register["payload"]["client-key"].is_null() {
         reply(&mut socket, &register, json!({"pairingType": "PROMPT"}));
+        match scenario {
+            PairingScenario::Refused => {
+                socket
+                    .send(Message::Text(
+                        json!({"type": "error", "payload": {"returnValue": false}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+                return;
+            }
+            PairingScenario::TimedOut | PairingScenario::Cancelled => {
+                while receive(&mut socket).is_some() {}
+                return;
+            }
+            PairingScenario::Paired => {}
+        }
     }
     socket
         .send(Message::Text(
@@ -172,7 +192,7 @@ fn serve(stream: TcpStream, log: Arc<Mutex<Vec<String>>>) {
 
 #[test]
 fn pairs_then_controls_a_fake_tv_through_the_package_process() {
-    let tv = FakeTv::start();
+    let tv = FakeTv::start(PairingScenario::Paired);
     let package = Package::new(adapter());
     let mut pairing = package.host();
     let (session, first) = pairing.pair_start(tv.settings(), None).unwrap();
@@ -217,6 +237,19 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     // commit; full conformance/failure/timeout/spike fixtures are next.
     drop(testing::Package::new(adapter()));
     drop(session);
+}
+
+#[test]
+fn every_pairing_scenario_passes_the_shared_admission_harness() {
+    testing_v3::pairing(
+        adapter(),
+        PairingCase {
+            device: |scenario| Some(Box::new(FakeTv::start(scenario)) as Box<dyn FakeDevice>),
+            settings: |device, _| device.settings(),
+            code: "unused",
+            after: Request::status(),
+        },
+    );
 }
 
 #[test]

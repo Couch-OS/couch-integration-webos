@@ -219,11 +219,11 @@ impl WebOsCredential {
             .filter(|key| !key.is_empty() && key.len() <= 4096)
             .ok_or(Error::Unpaired)?
             .to_owned();
-        let certificate = map
-            .get("certificate")
-            .and_then(Value::as_str)
-            .and_then(|value| BASE64.decode(value).ok())
-            .ok_or(Error::Certificate)?;
+        let certificate = match map.get("certificate") {
+            Some(Value::String(value)) => BASE64.decode(value).map_err(|_| Error::Certificate)?,
+            None if !secure => Vec::new(),
+            _ => return Err(Error::Certificate),
+        };
         if secure && certificate.is_empty() {
             return Err(Error::Certificate);
         }
@@ -231,11 +231,11 @@ impl WebOsCredential {
     }
 
     fn credential(&self) -> Credential {
-        Credential::new(json!({
-            "client_key": self.key,
-            "certificate": BASE64.encode(&self.certificate),
-        }))
-        .expect("a webOS key and certificate fit the credential limit")
+        let mut value = json!({"client_key": self.key});
+        if !self.certificate.is_empty() {
+            value["certificate"] = json!(BASE64.encode(&self.certificate));
+        }
+        Credential::new(value).expect("a webOS key and certificate fit the credential limit")
     }
 }
 
