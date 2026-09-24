@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "couch-webos"
-version = "0.1.0-pre2"
+version = "0.1.0-pre3"
 dependencies = [
  "base64",
  "couch-plugin",
