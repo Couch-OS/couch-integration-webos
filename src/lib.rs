@@ -28,6 +28,19 @@ const PAIR_BUDGET: Duration = Duration::from_secs(85);
 const PAIR_POLL_MS: u32 = 1500;
 const CERTIFICATE_CHANGED: &str = "The LG TV certificate changed; pair again";
 
+fn safe_label(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && text.len() <= 256 && !text.chars().any(char::is_control))
+}
+
+/// Use the foreground reply's human name when LG includes it. Do not turn one
+/// status read into another network round trip merely to decorate the screen.
+fn foreground_title(foreground: &Value) -> Option<String> {
+    safe_label(&foreground["appName"]).map(str::to_owned)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub url: String,
@@ -461,11 +474,13 @@ impl DeviceClient for WebOsTv {
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
             .map(str::to_owned);
+        let title = foreground_title(&foreground);
         Ok(Status {
             on,
             muted,
             volume: level,
             input,
+            title,
             ..Status::default()
         })
     }
@@ -657,6 +672,16 @@ mod tests {
             Err(Error::Certificate)
         ));
         assert!(WebOsCredential::parse(&no_pin, false).is_ok());
+    }
+
+    #[test]
+    fn foreground_names_are_safe_and_trimmed() {
+        assert_eq!(
+            foreground_title(&json!({"appId":"netflix","appName":"  Netflix app  "})).as_deref(),
+            Some("Netflix app")
+        );
+        assert_eq!(foreground_title(&json!({"appId":"netflix"})), None);
+        assert_eq!(foreground_title(&json!({"appName":"Bad\nname"})), None);
     }
 
     #[test]

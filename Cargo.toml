@@ -1,6 +1,6 @@
 [package]
 name = "couch-webos"
-version = "0.1.0-pre2"
+version = "0.1.0-pre3"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "LG webOS TV integration package for Couch"

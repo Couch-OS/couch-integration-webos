@@ -5,6 +5,13 @@ client. It owns the TV's SSAP WebSocket, on-screen approval pairing, client key
 and pinned certificate, navigation, playback, volume, mute, status and input
 selection. Couch keeps the native screen and the integration host.
 
+`0.1.0_pre3` also reports the foreground app's human name when the TV includes
+it in status. A core containing the packaged-TV touchscreen update recognizes this
+package's existing input selector and complete standard TV capability set,
+restores Couch's TV hero and transport row, and routes the physical D-pad to
+the television. Older protocol-3 cores continue to accept and run the package;
+they retain the generic package screen until the core is updated.
+
 The package is intentionally preview-only. The current protocol does not let a
 package enumerate or launch apps, and power-on remains a core concern because
 the built-in implementation may use the remote's privileged infrared device or
