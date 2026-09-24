@@ -44,7 +44,7 @@ impl ClientSettings for Settings {
 fn invalid_url() -> SdkError {
     SdkError::Invalid.because(Reason::InvalidSetting {
         field: "url".into(),
-        text: "Enter a complete LG TV address such as wss://192.0.2.20:3001/".into(),
+        text: "Enter the LG TV's IP address, such as 192.0.2.20".into(),
     })
 }
 
@@ -75,7 +75,13 @@ impl From<Error> for SdkError {
 type Result<T> = std::result::Result<T, Error>;
 
 fn endpoint(raw: &str) -> Result<(Url, IpAddr, u16)> {
-    let url = Url::parse(raw).map_err(|_| Error::Configuration)?;
+    let raw = raw.trim();
+    let url = match raw.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => Url::parse(&format!("wss://{address}:3001/")),
+        Ok(IpAddr::V6(address)) => Url::parse(&format!("wss://[{address}]:3001/")),
+        Err(_) => Url::parse(raw),
+    }
+    .map_err(|_| Error::Configuration)?;
     if !matches!(url.scheme(), "ws" | "wss")
         || !url.username().is_empty()
         || url.password().is_some()
@@ -126,7 +132,7 @@ fn connect_socket(
     let mut config = tungstenite::protocol::WebSocketConfig::default();
     config.max_message_size = Some(1024 * 1024);
     config.max_frame_size = Some(1024 * 1024);
-    tungstenite::client::client_with_config(raw, socket, Some(config))
+    tungstenite::client::client_with_config(url.as_str(), socket, Some(config))
         .map(|(socket, _)| socket)
         .map_err(|_| Error::Transport)
 }
@@ -361,7 +367,9 @@ impl DeviceClient for WebOsTv {
 
     fn connect_with(settings: &Settings, credential: Option<&Credential>) -> SdkResult<Self> {
         settings.validate()?;
-        let secure = settings.url.starts_with("wss://");
+        let secure = endpoint(&settings.url)
+            .map(|(url, _, _)| url.scheme() == "wss")
+            .map_err(SdkError::from)?;
         let credential = WebOsCredential::parse(credential.ok_or(SdkError::Unpaired)?, secure)
             .map_err(SdkError::from)?;
         let pin = Arc::new(Mutex::new(credential.certificate));
@@ -549,7 +557,11 @@ impl PairFlow for Pairing {
                 .filter(|key| !key.is_empty() && key.len() <= 4096)
                 .ok_or(SdkError::Protocol)?;
             let certificate = self.pin.lock().map(|pin| pin.clone()).unwrap_or_default();
-            if self.settings.url.starts_with("wss://") && certificate.is_empty() {
+            if endpoint(&self.settings.url)
+                .map(|(url, _, _)| url.scheme() == "wss")
+                .unwrap_or(true)
+                && certificate.is_empty()
+            {
                 return Ok(Self::failure(Error::Certificate));
             }
             let credential = WebOsCredential {
@@ -583,13 +595,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_require_one_root_websocket_url_at_a_unicast_ip() {
-        for valid in ["ws://127.0.0.1:3000/", "wss://192.0.2.10:3001/"] {
+    fn settings_accept_an_ip_and_pre1_urls_but_reject_other_endpoints() {
+        for valid in [
+            "127.0.0.1",
+            "192.0.2.10",
+            "2001:db8::10",
+            "ws://127.0.0.1:3000/",
+            "wss://192.0.2.10:3001/",
+        ] {
             assert!(Settings { url: valid.into() }.validate().is_ok(), "{valid}");
         }
         for invalid in [
             "",
-            "192.0.2.10",
+            "192.0.2.10:3001",
             "https://192.0.2.10/",
             "wss://example.com/",
             "wss://0.0.0.0:3001/",
@@ -606,6 +624,16 @@ mod tests {
                 "{invalid}"
             );
         }
+
+        let (url, host, port) = endpoint(" 192.0.2.10 ").unwrap();
+        assert_eq!(url.as_str(), "wss://192.0.2.10:3001/");
+        assert_eq!(host, "192.0.2.10".parse::<IpAddr>().unwrap());
+        assert_eq!(port, 3001);
+
+        let (url, host, port) = endpoint("2001:db8::10").unwrap();
+        assert_eq!(url.as_str(), "wss://[2001:db8::10]:3001/");
+        assert_eq!(host, "2001:db8::10".parse::<IpAddr>().unwrap());
+        assert_eq!(port, 3001);
     }
 
     #[test]

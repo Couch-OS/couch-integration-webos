@@ -3,7 +3,7 @@
   "min_core_protocol_version": 3,
   "id": "webos",
   "label": "LG webOS TV",
-  "version": "0.1.0_pre1",
+  "version": "0.1.0_pre2",
   "executable": "bin/couch-plugin-webos",
   "capabilities": [
     {"id": "power-off", "label": "Power off"},
@@ -35,7 +35,7 @@
   "settings": [
     {
       "id": "url",
-      "label": "TV address (wss://ADDRESS:3001/)",
+      "label": "TV IP address",
       "kind": "text",
       "required": true
     }

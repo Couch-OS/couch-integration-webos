@@ -12,10 +12,12 @@ a host-learned Wake-on-LAN address. This package therefore offers network
 power-off only. Do not remove the built-in client until those boundaries have
 been implemented and the package has passed side-by-side hardware validation.
 
-The only public setting is the TV URL, normally `wss://TV_ADDRESS:3001/`.
-Pairing asks the owner to approve Couch on the TV. The client key and exact TLS
-certificate are returned as a protocol-3 credential; they never enter settings,
-argv, the environment or exported Couch configuration.
+The only public setting is the TV IP address. The package uses encrypted webOS
+control on port 3001 automatically. Full `ws://` and `wss://` URLs saved by the
+first preview remain accepted when that package is upgraded. Pairing asks the
+owner to approve Couch on the TV. The client key and exact TLS certificate are
+returned as a protocol-3 credential; they never enter settings, argv, the
+environment or exported Couch configuration.
 
 ## Build and test
 
