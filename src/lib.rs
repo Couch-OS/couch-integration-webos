@@ -50,7 +50,11 @@ impl ClientSettings for Settings {
     const FILE_PREFIX: &'static str = "webos";
 
     fn validate(&self) -> SdkResult<()> {
-        endpoint(&self.url).map(|_| ()).map_err(|_| invalid_url())
+        let (url, _, _) = endpoint(&self.url).map_err(|_| invalid_url())?;
+        if url.path() != "/" || url.query().is_some() {
+            return Err(invalid_url());
+        }
+        Ok(())
     }
 }
 
@@ -99,8 +103,6 @@ fn endpoint(raw: &str) -> Result<(Url, IpAddr, u16)> {
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
     {
         return Err(Error::Configuration);
     }
@@ -649,6 +651,22 @@ mod tests {
         assert_eq!(url.as_str(), "wss://[2001:db8::10]:3001/");
         assert_eq!(host, "2001:db8::10".parse::<IpAddr>().unwrap());
         assert_eq!(port, 3001);
+    }
+
+    #[test]
+    fn pointer_endpoints_may_use_the_tv_resource_path_and_query() {
+        let (url, host, port) =
+            endpoint("wss://192.0.2.10:3001/resources/pointer?token=fixture").unwrap();
+        assert_eq!(url.path(), "/resources/pointer");
+        assert_eq!(url.query(), Some("token=fixture"));
+        assert_eq!(host, "192.0.2.10".parse::<IpAddr>().unwrap());
+        assert_eq!(port, 3001);
+
+        assert!(Settings {
+            url: url.to_string()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
