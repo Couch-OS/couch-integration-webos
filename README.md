@@ -5,6 +5,10 @@ client. It owns the TV's SSAP WebSocket, on-screen approval pairing, client key
 and pinned certificate, navigation, playback, volume, mute, status and input
 selection. Couch keeps the native screen and the integration host.
 
+`0.1.0_pre4` accepts the resource path in the pointer WebSocket URL returned by
+the TV, restoring D-pad and other pointer-backed controls. The setup field
+remains restricted to the TV's IP address or a root WebSocket URL.
+
 `0.1.0_pre3` also reports the foreground app's human name when the TV includes
 it in status. A core containing the packaged-TV touchscreen update recognizes this
 package's existing input selector and complete standard TV capability set,

@@ -49,7 +49,7 @@ impl FakeTv {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
                         let log = shared_log.clone();
-                        clients.push(thread::spawn(move || serve(stream, log, scenario)));
+                        clients.push(thread::spawn(move || serve(stream, log, scenario, address)));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -80,6 +80,18 @@ impl FakeDevice for FakeTv {
     }
 }
 
+impl FakeTv {
+    fn wait_for(&self, expected: &str) {
+        for _ in 0..100 {
+            if self.requests().iter().any(|request| request == expected) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("missing {expected:?}; requests={:?}", self.requests());
+    }
+}
+
 impl Drop for FakeTv {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -105,21 +117,32 @@ fn reply(socket: &mut WebSocket<TcpStream>, request: &Value, payload: Value) {
         .unwrap();
 }
 
-fn serve(stream: TcpStream, log: Arc<Mutex<Vec<String>>>, scenario: PairingScenario) {
+fn serve(
+    stream: TcpStream,
+    log: Arc<Mutex<Vec<String>>>,
+    scenario: PairingScenario,
+    address: std::net::SocketAddr,
+) {
     let Ok(mut socket) = tungstenite::accept(stream) else {
         return;
     };
     let register: Value = match socket.read() {
         Ok(message) => match message.into_text() {
-            Ok(text) => match serde_json::from_str(&text) {
-                Ok(value) => value,
-                Err(error) => {
-                    log.lock()
-                        .unwrap()
-                        .push(format!("register-json:{error}:{text}"));
+            Ok(text) => {
+                if let Some(name) = text.lines().find_map(|line| line.strip_prefix("name:")) {
+                    log.lock().unwrap().push(format!("pointer:{name}"));
                     return;
                 }
-            },
+                match serde_json::from_str(&text) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        log.lock()
+                            .unwrap()
+                            .push(format!("register-json:{error}:{text}"));
+                        return;
+                    }
+                }
+            }
             Err(error) => {
                 log.lock().unwrap().push(format!("register-text:{error}"));
                 return;
@@ -168,6 +191,10 @@ fn serve(stream: TcpStream, log: Arc<Mutex<Vec<String>>>, scenario: PairingScena
         log.lock().unwrap().push(uri.into());
         let payload = match uri {
             "ssap://audio/volumeUp" => json!({"returnValue": true}),
+            "ssap://com.webos.service.networkinput/getPointerInputSocket" => json!({
+                "returnValue": true,
+                "socketPath": format!("ws://{address}/resources/pointer?token=fixture")
+            }),
             "ssap://com.webos.service.tvpower/power/getPowerState" => {
                 json!({"returnValue": true, "state": "Active"})
             }
@@ -210,6 +237,8 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     host.configure_with(tv.settings(), Some(&credential))
         .unwrap();
     host.command("volume-up").unwrap();
+    host.command("up").unwrap();
+    tv.wait_for("pointer:UP");
     let status = host.status().unwrap();
     assert_eq!(status.on, Some(true));
     assert_eq!(status.volume, Some(37));
@@ -226,6 +255,8 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "register",
             "register",
             "ssap://audio/volumeUp",
+            "ssap://com.webos.service.networkinput/getPointerInputSocket",
+            "pointer:UP",
             "ssap://com.webos.service.tvpower/power/getPowerState",
             "ssap://audio/getVolume",
             "ssap://com.webos.applicationManager/getForegroundAppInfo",
