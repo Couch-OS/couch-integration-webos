@@ -37,8 +37,8 @@ jobs:
               "schema", "protocol_version", "id", "tier", "synthetic",
               "cargo_manifest", "cargo_package", "binary", "manifest",
           }
-          assert integration["protocol_version"] == 3
-          assert plugin["protocol_version"] == plugin["min_core_protocol_version"] == 3
+          assert integration["protocol_version"] == 5
+          assert plugin["protocol_version"] == plugin["min_core_protocol_version"] == 5
           assert integration["id"] == plugin["id"] == "webos"
           assert integration["binary"] == "couch-plugin-webos"
           assert plugin["executable"] == "bin/couch-plugin-webos"

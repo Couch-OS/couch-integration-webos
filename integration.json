@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "protocol_version": 3,
+  "protocol_version": 5,
   "id": "webos",
   "tier": "preview",
   "synthetic": false,
