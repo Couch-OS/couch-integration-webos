@@ -1,5 +1,6 @@
 //! First package-boundary admission case: a real adapter subprocess, a fake
-//! loopback SSAP television, protocol-3 pairing, then command/status/inputs.
+//! loopback SSAP television, protocol-3 pairing, then commands, status,
+//! inputs, apps and television selectors.
 
 use couch_plugin::{
     testing::{self, Adapter, FakeDevice, Package},
@@ -202,8 +203,15 @@ fn serve(
                 json!({"returnValue": true, "volume": 37, "mute": false})
             }
             "ssap://com.webos.applicationManager/getForegroundAppInfo" => {
-                json!({"returnValue": true, "appId": "HDMI_1"})
+                json!({"returnValue": true, "appId": "HDMI_1", "appName": "Game console"})
             }
+            "ssap://com.webos.service.apiadapter/audio/getSoundOutput" => {
+                json!({"returnValue": true, "soundOutput": "external_arc"})
+            }
+            "ssap://settings/getSystemSettings" => json!({
+                "returnValue": true,
+                "settings": {"pictureMode": "cinema"}
+            }),
             "ssap://tv/getExternalInputList" => json!({
                 "returnValue": true,
                 "devices": [
@@ -211,6 +219,17 @@ fn serve(
                     {"id": "HDMI_2", "label": "Blu-ray"}
                 ]
             }),
+            "ssap://com.webos.applicationManager/listLaunchPoints" => json!({
+                "returnValue": true,
+                "launchPoints": [
+                    {"id": "netflix", "title": "Netflix"},
+                    {"id": "com.webos.app.settings", "title": "Settings"}
+                ]
+            }),
+            "ssap://system.launcher/launch"
+            | "ssap://com.webos.service.apiadapter/audio/changeSoundOutput" => {
+                json!({"returnValue": true})
+            }
             _ => json!({"returnValue": false}),
         };
         reply(&mut socket, &request, payload);
@@ -244,9 +263,15 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     assert_eq!(status.volume, Some(37));
     assert_eq!(status.muted, Some(false));
     assert_eq!(status.input.as_deref(), Some("HDMI_1"));
+    assert_eq!(status.sound_output.as_deref(), Some("external_arc"));
+    assert_eq!(status.picture_mode.as_deref(), Some("cinema"));
     let inputs = host.inputs().unwrap();
     assert_eq!(inputs[0].id, "HDMI_1");
     assert_eq!(inputs[0].name, "Game console");
+    let apps = host.apps().unwrap();
+    assert_eq!(apps[0].name, "Netflix");
+    host.command("app:netflix").unwrap();
+    host.command("x:sound-tv-speaker").unwrap();
     assert_eq!(host.pair_session(), None);
     assert!(host.is_alive());
     assert_eq!(
@@ -260,7 +285,12 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "ssap://com.webos.service.tvpower/power/getPowerState",
             "ssap://audio/getVolume",
             "ssap://com.webos.applicationManager/getForegroundAppInfo",
+            "ssap://com.webos.service.apiadapter/audio/getSoundOutput",
+            "ssap://settings/getSystemSettings",
             "ssap://tv/getExternalInputList",
+            "ssap://com.webos.applicationManager/listLaunchPoints",
+            "ssap://system.launcher/launch",
+            "ssap://com.webos.service.apiadapter/audio/changeSoundOutput",
         ]
     );
 

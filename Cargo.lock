@@ -42,7 +42,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 [[package]]
 name = "couch-model"
 version = "0.1.0"
-source = "git+https://github.com/Couch-OS/couch.git?rev=d3ddafe07b2d10f3e113e225388ba3017f75e025#d3ddafe07b2d10f3e113e225388ba3017f75e025"
+source = "git+https://github.com/Couch-OS/couch.git?rev=06377bfee341321fe13164607ecb98787c4c522b#06377bfee341321fe13164607ecb98787c4c522b"
 dependencies = [
  "serde",
  "serde_json",
@@ -51,8 +51,9 @@ dependencies = [
 [[package]]
 name = "couch-plugin"
 version = "0.1.0"
-source = "git+https://github.com/Couch-OS/couch.git?rev=d3ddafe07b2d10f3e113e225388ba3017f75e025#d3ddafe07b2d10f3e113e225388ba3017f75e025"
+source = "git+https://github.com/Couch-OS/couch.git?rev=06377bfee341321fe13164607ecb98787c4c522b#06377bfee341321fe13164607ecb98787c4c522b"
 dependencies = [
+ "base64",
  "couch-sdk",
  "libc",
  "serde",
@@ -62,7 +63,7 @@ dependencies = [
 [[package]]
 name = "couch-sdk"
 version = "0.1.0"
-source = "git+https://github.com/Couch-OS/couch.git?rev=d3ddafe07b2d10f3e113e225388ba3017f75e025#d3ddafe07b2d10f3e113e225388ba3017f75e025"
+source = "git+https://github.com/Couch-OS/couch.git?rev=06377bfee341321fe13164607ecb98787c4c522b#06377bfee341321fe13164607ecb98787c4c522b"
 dependencies = [
  "couch-model",
  "rustls",
@@ -72,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "couch-webos"
-version = "0.1.0-pre4"
+version = "0.1.0-pre5"
 dependencies = [
  "base64",
  "couch-plugin",

@@ -1,9 +1,9 @@
 {
-  "protocol_version": 3,
-  "min_core_protocol_version": 3,
+  "protocol_version": 5,
+  "min_core_protocol_version": 5,
   "id": "webos",
   "label": "LG webOS TV",
-  "version": "0.1.0_pre4",
+  "version": "0.1.0_pre5",
   "executable": "bin/couch-plugin-webos",
   "capabilities": [
     {"id": "power-off", "label": "Power off"},
@@ -30,7 +30,9 @@
     {"id": "pause", "label": "Pause"},
     {"id": "stop", "label": "Stop"},
     {"id": "rewind", "label": "Rewind"},
-    {"id": "fast-forward", "label": "Fast forward"}
+    {"id": "fast-forward", "label": "Fast forward"},
+    {"id": "x:sound-tv-speaker", "label": "TV speakers"},
+    {"id": "x:sound-external-arc", "label": "HDMI ARC / eARC"}
   ],
   "settings": [
     {
@@ -41,6 +43,7 @@
     }
   ],
   "supports_inputs": true,
+  "supports_apps": true,
   "presentation": [
     {"kind": "command_group", "title": "Power", "commands": ["power-off"]},
     {"kind": "command_group", "title": "Navigation", "commands": ["up", "down", "left", "right", "ok", "back", "home", "menu"]},
@@ -48,7 +51,8 @@
     {"kind": "command_group", "title": "Volume", "commands": ["volume-up", "volume-down", "mute"]},
     {"kind": "toggle", "label": "Mute", "state": "muted", "on": "mute-on", "off": "mute-off"},
     {"kind": "status_text", "label": "Volume", "field": "volume"},
-    {"kind": "input_selector", "label": "Input"}
+    {"kind": "input_selector", "label": "Input"},
+    {"kind": "sound_output_selector", "label": "Sound output", "outputs": ["x:sound-tv-speaker", "x:sound-external-arc"]}
   ],
   "pairing": {
     "required": true,

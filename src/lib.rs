@@ -162,7 +162,8 @@ fn registration(key: Option<&str>) -> Value {
             "permissions": [
                 "CONTROL_AUDIO", "CONTROL_INPUT_TV", "CONTROL_INPUT_MEDIA_PLAYBACK",
                 "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER", "READ_POWER_STATE",
-                "READ_INPUT_DEVICE_LIST", "READ_RUNNING_APPS"
+                "READ_INPUT_DEVICE_LIST", "READ_RUNNING_APPS", "READ_INSTALLED_APPS",
+                "LAUNCH"
             ]
         }
     });
@@ -373,6 +374,8 @@ impl DeviceClient for WebOsTv {
             ("stop", "Stop"),
             ("rewind", "Rewind"),
             ("fast-forward", "Fast forward"),
+            ("x:sound-tv-speaker", "TV speakers"),
+            ("x:sound-external-arc", "HDMI ARC / eARC"),
         ]
     }
 
@@ -426,6 +429,21 @@ impl DeviceClient for WebOsTv {
             Function::Input(id) if Self::supports_input(id) => self
                 .request("ssap://tv/switchInput", json!({"inputId": id}))
                 .map(|_| ()),
+            Function::App(id) if Self::supports_app(id) => self
+                .request("ssap://system.launcher/launch", json!({"id": id}))
+                .map(|_| ()),
+            Function::Custom(id) if id == "sound-tv-speaker" => self
+                .request(
+                    "ssap://com.webos.service.apiadapter/audio/changeSoundOutput",
+                    json!({"output":"tv_speaker"}),
+                )
+                .map(|_| ()),
+            Function::Custom(id) if id == "sound-external-arc" => self
+                .request(
+                    "ssap://com.webos.service.apiadapter/audio/changeSoundOutput",
+                    json!({"output":"external_arc"}),
+                )
+                .map(|_| ()),
             Function::Up => self.button("UP"),
             Function::Down => self.button("DOWN"),
             Function::Left => self.button("LEFT"),
@@ -464,6 +482,20 @@ impl DeviceClient for WebOsTv {
                 json!({}),
             )
             .map_err(SdkError::from)?;
+        let sound_output = self
+            .request(
+                "ssap://com.webos.service.apiadapter/audio/getSoundOutput",
+                json!({}),
+            )
+            .ok()
+            .and_then(|value| safe_label(&value["soundOutput"]).map(str::to_owned));
+        let picture_mode = self
+            .request(
+                "ssap://settings/getSystemSettings",
+                json!({"category":"picture","keys":["pictureMode"]}),
+            )
+            .ok()
+            .and_then(|value| safe_label(&value["settings"]["pictureMode"]).map(str::to_owned));
         let on = power["state"]
             .as_str()
             .map(|state| !matches!(state, "Power Off" | "Suspend" | "Screen Off"));
@@ -483,6 +515,8 @@ impl DeviceClient for WebOsTv {
             volume: level,
             input,
             title,
+            sound_output,
+            picture_mode,
             ..Status::default()
         })
     }
@@ -510,6 +544,39 @@ impl DeviceClient for WebOsTv {
 
     fn supports_input(id: &str) -> bool {
         valid_input_id(id)
+    }
+
+    fn apps(&mut self) -> SdkResult<Vec<Selectable>> {
+        let response = self
+            .request(
+                "ssap://com.webos.applicationManager/listLaunchPoints",
+                json!({}),
+            )
+            .map_err(SdkError::from)?;
+        let rows = response["launchPoints"]
+            .as_array()
+            .ok_or(SdkError::Protocol)?;
+        let mut seen = HashSet::new();
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                let id = row["id"].as_str()?;
+                let name = row["title"].as_str().unwrap_or(id).trim();
+                (Self::supports_app(id)
+                    && seen.insert(id.to_owned())
+                    && !name.is_empty()
+                    && name.len() <= 256
+                    && !name.chars().any(char::is_control))
+                .then(|| Selectable::new(id, name))
+            })
+            .collect())
+    }
+
+    fn supports_app(id: &str) -> bool {
+        id.len() <= 256
+            && !id.is_empty()
+            && !id.chars().any(char::is_control)
+            && Function::parse(&format!("app:{id}")).is_some()
     }
 }
 
