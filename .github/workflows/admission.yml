@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_armv7_build:
+        description: Run the optional ARMv7 cross-build after admission passes
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -47,6 +53,8 @@ jobs:
       - run: cargo test --locked --all-targets
 
   armv7:
+    needs: admission
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_armv7_build }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
