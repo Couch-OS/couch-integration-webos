@@ -125,7 +125,6 @@ impl Drop for PointerWorker {
 }
 
 fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
-    crate::pointer_diagnostics::record("pointer worker started");
     loop {
         match commands.try_recv() {
             Ok(Command::Button { name, reply }) => {
@@ -135,10 +134,6 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
                     .map(|()| ())
                     .map_err(|_| WorkerError::Transport);
                 let failed = result.is_err();
-                crate::pointer_diagnostics::record(&format!(
-                    "pointer worker button send {} name={name}",
-                    if failed { "failed" } else { "succeeded" }
-                ));
                 let _ = reply.send(result);
                 if failed {
                     // A failed send has uncertain delivery. Exit; never replay.
@@ -146,7 +141,6 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
                 }
             }
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
-                crate::pointer_diagnostics::record("pointer worker shutdown requested");
                 let _ = socket.close(None);
                 let _ = socket.flush();
                 break;
@@ -157,16 +151,13 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
         match socket.read() {
             Ok(Message::Ping(_)) => {
                 // tungstenite queues the automatic Pong when Ping is read.
-                crate::pointer_diagnostics::record("pointer worker received peer Ping");
                 if socket.flush().is_err() {
-                    crate::pointer_diagnostics::record("pointer worker failed to flush Pong");
                     break;
                 }
             }
             Ok(Message::Pong(_)) => {}
             Ok(Message::Close(_)) => {
                 // Reading Close queues the close response; flush it before exit.
-                crate::pointer_diagnostics::record("pointer worker received peer Close");
                 let _ = socket.flush();
                 break;
             }
@@ -179,17 +170,10 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
                     error.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) => {}
-            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => {
-                crate::pointer_diagnostics::record("pointer worker observed closed transport");
-                break;
-            }
-            Err(_) => {
-                crate::pointer_diagnostics::record("pointer worker observed transport error");
-                break;
-            }
+            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => break,
+            Err(_) => break,
         }
     }
-    crate::pointer_diagnostics::record("pointer worker stopped");
 }
 
 // Compile-time proof for the exact production socket type, including TLS.
