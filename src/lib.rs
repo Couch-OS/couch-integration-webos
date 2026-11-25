@@ -1,7 +1,7 @@
 //! LG webOS LAN control over SSAP.
 //!
 //! One package child owns one control WebSocket and, when navigation is used,
-//! one pointer WebSocket. Commands are never retried. Pairing returns the TV's
+//! one pointer WebSocket worker. Commands are never replayed. Pairing returns the TV's
 //! client key and exact TLS certificate as a host-owned protocol-3 credential.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -27,6 +27,10 @@ const REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIR_BUDGET: Duration = Duration::from_secs(85);
 const PAIR_POLL_MS: u32 = 1500;
 const CERTIFICATE_CHANGED: &str = "The LG TV certificate changed; pair again";
+
+mod pointer_worker;
+
+use pointer_worker::{PointerWorker, WorkerError};
 
 fn safe_label(value: &Value) -> Option<&str> {
     value
@@ -263,7 +267,7 @@ impl WebOsCredential {
 
 pub struct WebOsTv {
     socket: WebSocket<Socket>,
-    pointer: Option<WebSocket<Socket>>,
+    pointer: Option<PointerWorker>,
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
@@ -300,35 +304,71 @@ impl WebOsTv {
         self.request(uri, json!({})).map(|_| ())
     }
 
-    fn button(&mut self, name: &str) -> Result<()> {
-        if self.pointer.is_none() {
-            let response = self.request(
-                "ssap://com.webos.service.networkinput/getPointerInputSocket",
-                json!({}),
-            )?;
-            let raw = response["socketPath"].as_str().ok_or(Error::Protocol)?;
-            let (pointer, host, port) = endpoint(raw)?;
-            let (control, own_host, own_port) = endpoint(&self.url)?;
-            if host != own_host || port != own_port || pointer.scheme() != control.scheme() {
-                return Err(Error::Protocol);
-            }
-            self.pointer = Some(connect_socket(raw, self.pin.clone(), IO_TIMEOUT)?);
+    fn connect_pointer_worker(&mut self) -> Result<()> {
+        let response = self.request(
+            "ssap://com.webos.service.networkinput/getPointerInputSocket",
+            json!({}),
+        )?;
+        let raw = response["socketPath"].as_str().ok_or(Error::Protocol)?;
+        let (pointer, host, port) = endpoint(raw)?;
+        let (control, own_host, own_port) = endpoint(&self.url)?;
+        if host != own_host || port != own_port || pointer.scheme() != control.scheme() {
+            return Err(Error::Protocol);
         }
-        let pointer = self.pointer.as_mut().ok_or(Error::Transport)?;
-        pointer
-            .get_ref()
-            .timeout(IO_TIMEOUT)
-            .map_err(|_| Error::Transport)?;
-        if pointer
-            .send(Message::Text(
-                format!("type:button\nname:{name}\n\n").into(),
-            ))
-            .is_err()
+
+        let pointer = connect_socket(raw, self.pin.clone(), IO_TIMEOUT)?;
+        let worker = PointerWorker::spawn(pointer).map_err(|_| Error::Transport)?;
+        self.pointer = Some(worker);
+        Ok(())
+    }
+
+    fn button(&mut self, name: &str) -> Result<()> {
+        // The worker continuously services incoming frames while the main
+        // thread remains the sole owner of DeviceClient and the SSAP socket.
+        // If it is already known to have stopped, replace it before sending.
+        if self
+            .pointer
+            .as_ref()
+            .is_some_and(PointerWorker::is_finished)
         {
             self.pointer = None;
-            return Err(Error::Transport);
         }
-        Ok(())
+        if self.pointer.is_none() {
+            self.connect_pointer_worker()?;
+        }
+
+        let result = self.pointer.as_ref().ok_or(Error::Transport)?.button(name);
+        match result {
+            Ok(()) => Ok(()),
+            Err(WorkerError::StoppedBeforeSend) => {
+                // The worker confirms the command was not accepted. Replacing
+                // the socket and sending once is safe in this narrow case.
+                self.pointer = None;
+                self.connect_pointer_worker()?;
+                match self.pointer.as_ref().ok_or(Error::Transport)?.button(name) {
+                    Ok(()) => Ok(()),
+                    Err(WorkerError::InvalidButton) => {
+                        self.pointer = None;
+                        Err(Error::Configuration)
+                    }
+                    Err(_) => {
+                        // Once queued to the replacement worker, delivery is
+                        // uncertain. Drop it and never attempt another replay.
+                        self.pointer = None;
+                        Err(Error::Transport)
+                    }
+                }
+            }
+            Err(WorkerError::InvalidButton) => {
+                self.pointer = None;
+                Err(Error::Configuration)
+            }
+            Err(WorkerError::Busy | WorkerError::Transport) => {
+                // The command may have been delivered; never replay it.
+                self.pointer = None;
+                Err(Error::Transport)
+            }
+        }
     }
 
     fn volume(&mut self) -> Result<Value> {
