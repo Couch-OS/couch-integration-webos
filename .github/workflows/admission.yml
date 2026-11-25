@@ -45,6 +45,10 @@ jobs:
           PY
       - run: cargo fmt -- --check
       - run: cargo test --locked --all-targets
+      - name: Test signed feed-history validation
+        run: bash tools/test-feed-history.sh
+      - name: Validate committed repository public key
+        run: openssl pkey -pubin -in keys/webos-repository-public.pem -noout
 
   armv7:
     runs-on: ubuntu-24.04

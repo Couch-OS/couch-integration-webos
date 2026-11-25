@@ -1,0 +1,73 @@
+name: Renew webOS preview feed metadata
+
+on:
+  schedule:
+    - cron: '31 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webos-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out webOS integration
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: couch-integration-webos
+
+      - name: Check out published GitHub Pages feed
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: gh-pages
+          path: published-feed
+
+      - name: Prepare and validate signing keys
+        shell: bash
+        env:
+          APK_PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
+          APK_PUBLIC_KEY: ${{ secrets.APK_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APK_PRIVATE_KEY"
+          test -n "$APK_PUBLIC_KEY"
+          install -d -m 700 "$RUNNER_TEMP/apk-keys"
+          printf '%s\n' "$APK_PRIVATE_KEY" > "$RUNNER_TEMP/apk-keys/developer.rsa"
+          printf '%s\n' "$APK_PUBLIC_KEY" > "$RUNNER_TEMP/apk-keys/developer.rsa.pub"
+          chmod 600 "$RUNNER_TEMP/apk-keys/developer.rsa"
+          chmod 644 "$RUNNER_TEMP/apk-keys/developer.rsa.pub"
+          PRIVATE_DER_SHA256="$(openssl pkey -in "$RUNNER_TEMP/apk-keys/developer.rsa" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+          SECRET_PUBLIC_DER_SHA256="$(openssl pkey -pubin -in "$RUNNER_TEMP/apk-keys/developer.rsa.pub" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+          REPOSITORY_PUBLIC_DER_SHA256="$(openssl pkey -pubin -in "$GITHUB_WORKSPACE/couch-integration-webos/keys/webos-repository-public.pem" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+          test "$PRIVATE_DER_SHA256" = "$SECRET_PUBLIC_DER_SHA256"
+          test "$SECRET_PUBLIC_DER_SHA256" = "$REPOSITORY_PUBLIC_DER_SHA256"
+          echo "webOS feed signing key pair verified."
+
+      - name: Renew and verify signed feed metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash couch-integration-webos/tools/renew-feed-metadata.sh \
+            published-feed/preview/armv7 \
+            "$RUNNER_TEMP/apk-keys/developer.rsa" \
+            "$RUNNER_TEMP/apk-keys/developer.rsa.pub"
+
+      - name: Publish renewed metadata to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: published-feed
+          destination_dir: .
+          commit_message: "Renew webOS preview feed metadata"

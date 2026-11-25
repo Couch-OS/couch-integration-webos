@@ -1,0 +1,416 @@
+name: Build webOS integration package
+
+on:
+  push:
+    branches:
+      - feature/hdmi-cec-inputs
+  workflow_dispatch:
+    inputs:
+      version:
+        description: APK-compatible package version (for example 0.1.0_pre5_git1)
+        required: true
+        type: string
+      dry_run:
+        description: Build and validate without publishing GitHub Pages or a Release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webos-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dry_run: ${{ steps.version.outputs.dry_run }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out webOS integration
+        uses: actions/checkout@v4
+        with:
+          path: couch-integration-webos
+
+      - name: Check out pinned Couch SDK
+        uses: actions/checkout@v4
+        with:
+          repository: Couch-OS/couch
+          ref: 06377bfee341321fe13164607ecb98787c4c522b
+          path: couch-sdk-reference
+
+      - name: Validate requested version and publication guard
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            [[ "$REF_NAME" == "refs/heads/feature/hdmi-cec-inputs" ]] || {
+              echo "Push builds are restricted to feature/hdmi-cec-inputs." >&2; exit 1;
+            }
+            REQUESTED_VERSION="0.1.0_pre5_git1"
+            DRY_RUN=true
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            DRY_RUN="$DISPATCH_DRY_RUN"
+          else
+            echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 1
+          fi
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$ ]] || {
+            echo "Invalid package version: $REQUESTED_VERSION" >&2; exit 1;
+          }
+          if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Publishing is permitted only from main." >&2; exit 1
+          fi
+          if [[ "$DRY_RUN" != "true" && "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "Publishing requires an explicit workflow_dispatch." >&2; exit 1
+          fi
+          echo "version=$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Check out existing Pages feed when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="$GITHUB_WORKSPACE/couch-integration-webos"
+          FEED="$GITHUB_WORKSPACE/existing-feed"
+          mkdir -p "$FEED"
+          set +e
+          REMOTE_REF="$(git -C "$SOURCE" ls-remote --heads origin refs/heads/gh-pages 2>"$RUNNER_TEMP/gh-pages-error")"
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -ne 0 ]]; then
+            cat "$RUNNER_TEMP/gh-pages-error" >&2 || true
+            echo "Unable to inspect gh-pages; refusing to continue." >&2
+            exit 1
+          fi
+          if [[ -n "$REMOTE_REF" ]]; then
+            git -C "$SOURCE" fetch --no-tags origin refs/heads/gh-pages
+            git -C "$SOURCE" archive FETCH_HEAD | tar -x -C "$FEED"
+            echo "PAGES_BRANCH_EXISTS=true" >> "$GITHUB_ENV"
+            echo "Existing Pages feed found."
+          else
+            echo "PAGES_BRANCH_EXISTS=false" >> "$GITHUB_ENV"
+            echo "No gh-pages branch exists; this is an initial feed build."
+          fi
+
+      - name: Set up Rust and ARM emulation
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/couch-sdk-reference"
+          VERSION=0.15.2
+          NAME="zig-x86_64-linux-$VERSION"
+          SHA=02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
+          mkdir -p build/toolchains
+          curl -fsSL "https://ziglang.org/download/$VERSION/$NAME.tar.xz" -o "build/toolchains/$NAME.tar.xz"
+          echo "$SHA  build/toolchains/$NAME.tar.xz" | sha256sum -c -
+          tar -xJf "build/toolchains/$NAME.tar.xz" -C build/toolchains
+          rm "build/toolchains/$NAME.tar.xz"
+          echo "ZIG=$GITHUB_WORKSPACE/couch-sdk-reference/build/toolchains/$NAME/zig" >> "$GITHUB_ENV"
+
+      - name: Prepare versioned plugin manifest
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          PLUGIN="$GITHUB_WORKSPACE/couch-integration-webos"
+          jq -e --arg version "$VERSION" '
+            .version = $version
+          ' "$PLUGIN/plugin.json" > "$RUNNER_TEMP/plugin.json"
+          mv "$RUNNER_TEMP/plugin.json" "$PLUGIN/plugin.json"
+          jq -e --arg version "$VERSION" '
+            .id == "webos" and .version == $version and
+            .executable == "bin/couch-plugin-webos" and
+            .protocol_version == 5 and .min_core_protocol_version == 5
+          ' "$PLUGIN/plugin.json" >/dev/null
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path "$GITHUB_WORKSPACE/couch-integration-webos/Cargo.toml" -- --check
+
+      - name: Run Rust test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/couch-sdk-reference/clients"
+          # Cargo's default behavior skips #[ignore] tests, including the
+          # intentionally long-running shared pairing scenario.
+          cargo test --locked --all-targets \
+            --manifest-path "$GITHUB_WORKSPACE/couch-integration-webos/Cargo.toml"
+
+      - name: Build static ARMv7 plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$GITHUB_WORKSPACE/couch-sdk-reference"
+          PLUGIN="$GITHUB_WORKSPACE/couch-integration-webos"
+          cd "$SDK"
+          source tools/arm-cc-env.sh
+          cd clients
+          cargo build --release --locked \
+            --target armv7-unknown-linux-musleabihf \
+            --manifest-path "$PLUGIN/Cargo.toml"
+          BIN="$PLUGIN/target/armv7-unknown-linux-musleabihf/release/couch-plugin-webos"
+          test -s "$BIN"
+          file "$BIN" | grep -q 'statically linked'
+          sha256sum "$BIN"
+
+      - name: Prepare and validate signing keys
+        shell: bash
+        env:
+          APK_PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
+          APK_PUBLIC_KEY: ${{ secrets.APK_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APK_PRIVATE_KEY"
+          test -n "$APK_PUBLIC_KEY"
+          install -d -m 700 "$RUNNER_TEMP/apk-keys"
+          printf '%s\n' "$APK_PRIVATE_KEY" > "$RUNNER_TEMP/apk-keys/developer.rsa"
+          printf '%s\n' "$APK_PUBLIC_KEY" > "$RUNNER_TEMP/apk-keys/developer.rsa.pub"
+          chmod 600 "$RUNNER_TEMP/apk-keys/developer.rsa"
+          chmod 644 "$RUNNER_TEMP/apk-keys/developer.rsa.pub"
+          PRIVATE_DER_SHA256="$(openssl pkey -in "$RUNNER_TEMP/apk-keys/developer.rsa" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+          SECRET_PUBLIC_DER_SHA256="$(openssl pkey -pubin -in "$RUNNER_TEMP/apk-keys/developer.rsa.pub" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+          REPOSITORY_PUBLIC_DER_SHA256="$(openssl pkey -pubin -in "$GITHUB_WORKSPACE/couch-integration-webos/keys/webos-repository-public.pem" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+          test "$PRIVATE_DER_SHA256" = "$SECRET_PUBLIC_DER_SHA256"
+          test "$SECRET_PUBLIC_DER_SHA256" = "$REPOSITORY_PUBLIC_DER_SHA256"
+          echo "Signing key pair matches the committed webOS repository key."
+
+      - name: Validate signed feed history
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ steps.version.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          FEED_ARCH="$GITHUB_WORKSPACE/existing-feed/preview/armv7"
+          if [[ -s "$FEED_ARCH/feed.json" ]]; then
+            ARGS=("$FEED_ARCH" "$GITHUB_WORKSPACE/couch-integration-webos/keys/webos-repository-public.pem" "$VERSION")
+            if [[ "$DRY_RUN" == "true" ]]; then ARGS+=(--allow-existing-version); fi
+            bash "$GITHUB_WORKSPACE/couch-integration-webos/tools/validate-feed-history.sh" "${ARGS[@]}"
+          else
+            if [[ "$PAGES_BRANCH_EXISTS" == "true" ]]; then
+              UNEXPECTED="$(find "$GITHUB_WORKSPACE/existing-feed" -mindepth 1 -maxdepth 1 ! -name .nojekyll ! -name preview -print -quit)"
+              if [[ -n "$UNEXPECTED" ]]; then
+                echo "Existing gh-pages branch contains unmanaged content ($UNEXPECTED); refusing to overwrite it." >&2
+                exit 1
+              fi
+            fi
+            if [[ -n "$(find "$FEED_ARCH" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)" ]]; then
+              echo "Feed directory exists but has no valid feed.json; refusing bootstrap." >&2
+              exit 1
+            fi
+            echo "No previous feed metadata; initial feed sequence will be 1."
+          fi
+
+      - name: Build and sign ARMv7 APK
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          PLUGIN="$GITHUB_WORKSPACE/couch-integration-webos"
+          SDK="$GITHUB_WORKSPACE/couch-sdk-reference"
+          OUTPUT="$PLUGIN/build/integrations"
+          mkdir -p "$OUTPUT"
+          docker run --rm --platform linux/arm/v7 \
+            -v "$SDK:/work/sdk:ro" \
+            -v "$PLUGIN:/work/plugin:ro" \
+            -v "$RUNNER_TEMP:/work/tmp:rw" \
+            -v "$OUTPUT:/work/out:rw" \
+            -v "$RUNNER_TEMP/apk-keys:/work/keys:ro" \
+            -e VERSION="$VERSION" alpine:3.24 sh -eu -c '
+              mkdir -p /root/.abuild
+              cp /work/keys/developer.rsa /root/.abuild/-6afc809d.rsa
+              cp /work/keys/developer.rsa.pub /root/.abuild/-6afc809d.rsa.pub
+              chmod 600 /root/.abuild/-6afc809d.rsa
+              chmod 644 /root/.abuild/-6afc809d.rsa.pub
+              apk add --no-cache alpine-sdk jq binutils
+              cp /root/.abuild/-6afc809d.rsa.pub /etc/apk/keys/
+              sh /work/sdk/tools/integrations/build-apk.sh webos "$VERSION" \
+                /work/plugin/target/armv7-unknown-linux-musleabihf/release/couch-plugin-webos \
+                /work/plugin/plugin.json /root/.abuild/-6afc809d.rsa /work/out
+              apk --keys-dir /etc/apk/keys verify "/work/out/couch-integration-webos-$VERSION-r0.apk"
+            '
+          APK="$OUTPUT/couch-integration-webos-$VERSION-r0.apk"
+          test -s "$APK"
+          tar -tzf "$APK" | grep -Fx 'usr/lib/couch/integrations/webos/manifest.json' >/dev/null
+          tar -tzf "$APK" | grep -Fx 'usr/lib/couch/integrations/webos/bin/couch-plugin-webos' >/dev/null
+          tar -xOf "$APK" usr/lib/couch/integrations/webos/manifest.json > "$RUNNER_TEMP/apk-manifest.json"
+          tar -xOf "$APK" usr/lib/couch/integrations/webos/bin/couch-plugin-webos > "$RUNNER_TEMP/apk-binary"
+          cmp "$PLUGIN/plugin.json" "$RUNNER_TEMP/apk-manifest.json"
+          cmp "$PLUGIN/target/armv7-unknown-linux-musleabihf/release/couch-plugin-webos" "$RUNNER_TEMP/apk-binary"
+          sha256sum "$APK"
+
+      - name: Build signed repository index and feed metadata
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          PLUGIN="$GITHUB_WORKSPACE/couch-integration-webos"
+          SDK="$GITHUB_WORKSPACE/couch-sdk-reference"
+          OUTPUT="$PLUGIN/build/integrations"
+          FEED="$PLUGIN/build/repository/preview"
+          mkdir -p "$FEED/armv7"
+          VERIFIED="$RUNNER_TEMP/webos-verified-packages.tsv"
+          if [[ -s "$RUNNER_TEMP/webos-verified-packages.tsv" ]]; then
+            while IFS=$'\t' read -r _VERSION PREVIOUS_APK _SIZE _SHA256; do
+              cp -n -- "$GITHUB_WORKSPACE/existing-feed/preview/armv7/$PREVIOUS_APK" "$OUTPUT/$PREVIOUS_APK"
+            done < "$VERIFIED"
+          fi
+          docker run --rm --platform linux/arm/v7 \
+            -v "$SDK:/work/sdk:ro" -v "$OUTPUT:/work/packages:ro" \
+            -v "$FEED:/work/repository:rw" -v "$RUNNER_TEMP/apk-keys:/work/keys:ro" \
+            alpine:3.24 sh -eu -c '
+              mkdir -p /root/.abuild
+              cp /work/keys/developer.rsa /root/.abuild/-6afc809d.rsa
+              cp /work/keys/developer.rsa.pub /root/.abuild/-6afc809d.rsa.pub
+              chmod 600 /root/.abuild/-6afc809d.rsa
+              chmod 644 /root/.abuild/-6afc809d.rsa.pub
+              apk add --no-cache alpine-sdk
+              cp /root/.abuild/-6afc809d.rsa.pub /etc/apk/keys/
+              sh /work/sdk/tools/integrations/build-repository.sh /root/.abuild/-6afc809d.rsa /work/packages /work/repository
+              apk --keys-dir /etc/apk/keys verify /work/repository/armv7/APKINDEX.tar.gz
+            '
+          INDEX="$FEED/armv7/APKINDEX.tar.gz"
+          REPO_ARCH="$FEED/armv7"
+          PRIVATE_KEY="$RUNNER_TEMP/apk-keys/developer.rsa"
+          test -s "$INDEX"
+          PREVIOUS="$GITHUB_WORKSPACE/existing-feed/preview/armv7/feed.json"
+          SEQUENCE=1
+          if [[ -s "$PREVIOUS" ]]; then
+            PREVIOUS_SEQUENCE="$(jq -er '.sequence | numbers' "$PREVIOUS")"
+            SEQUENCE="$((PREVIOUS_SEQUENCE + 1))"
+          fi
+          ISSUED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          EXPIRES="$(date -u -d '+30 days' +'%Y-%m-%dT%H:%M:%SZ')"
+          INDEX_SIZE="$(stat -c '%s' "$INDEX")"
+          INDEX_SHA256="$(sha256sum "$INDEX" | cut -d ' ' -f 1)"
+          PACKAGES="$RUNNER_TEMP/feed-packages.json"
+          : > "$PACKAGES"
+          for APK in "$REPO_ARCH"/couch-integration-*.apk; do
+            [[ -f "$APK" ]] || continue
+            APK_NAME="$(basename "$APK")"
+            APK_VERSION="${APK_NAME#couch-integration-webos-}"
+            APK_VERSION="${APK_VERSION%-r0.apk}"
+            APK_SIZE="$(stat -c '%s' "$APK")"
+            APK_SHA256="$(sha256sum "$APK" | cut -d ' ' -f 1)"
+            jq -n --arg id webos --arg version "$APK_VERSION" --arg apk "$APK_NAME" \
+              --argjson size "$APK_SIZE" --arg sha256 "$APK_SHA256" \
+              '{id:$id,version:$version,apk:$apk,size:$size,sha256:$sha256,protocol_version:5,min_core_protocol_version:5}' >> "$PACKAGES"
+          done
+          jq -s 'if length > 0 then . else error("no webOS APKs in feed") end' "$PACKAGES" > "$RUNNER_TEMP/feed-packages-array.json"
+          jq -n --arg channel preview --argjson sequence "$SEQUENCE" --arg issued "$ISSUED" \
+            --arg expires "$EXPIRES" --arg index_path APKINDEX.tar.gz --argjson index_size "$INDEX_SIZE" \
+            --arg index_sha256 "$INDEX_SHA256" --slurpfile packages "$RUNNER_TEMP/feed-packages-array.json" \
+            '{schema:1,channel:$channel,sequence:$sequence,issued:$issued,expires:$expires,index:{path:$index_path,size:$index_size,sha256:$index_sha256},packages:$packages[0]}' \
+            > "$REPO_ARCH/feed.json"
+          openssl dgst -sha256 -sign "$PRIVATE_KEY" -out "$REPO_ARCH/feed.json.sig" "$REPO_ARCH/feed.json"
+          openssl dgst -sha256 -verify "$RUNNER_TEMP/apk-keys/developer.rsa.pub" -signature "$REPO_ARCH/feed.json.sig" "$REPO_ARCH/feed.json"
+          bash "$PLUGIN/tools/validate-feed-history.sh" "$REPO_ARCH" "$PLUGIN/keys/webos-repository-public.pem" "$VERSION" --allow-existing-version
+          sha256sum "$INDEX" "$REPO_ARCH/feed.json" "$REPO_ARCH/feed.json.sig"
+          touch "$PLUGIN/build/repository/.nojekyll"
+
+      - name: Upload package and feed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webos-package-feed
+          path: |
+            couch-integration-webos/build/integrations/*.apk
+            couch-integration-webos/build/repository/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: needs.build.outputs.dry_run == 'false' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out webOS integration
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download built package and feed
+        uses: actions/download-artifact@v4
+        with:
+          name: webos-package-feed
+          path: package-artifact
+
+      - name: Verify downloaded publication artifact
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          ROOT="package-artifact/repository"
+          FEED="$ROOT/preview/armv7"
+          APK_NAME="couch-integration-webos-$VERSION-r0.apk"
+          APK="package-artifact/integrations/$APK_NAME"
+          test -f "$ROOT/.nojekyll"
+          test -s "$FEED/APKINDEX.tar.gz"
+          test -s "$FEED/feed.json"
+          test -s "$FEED/feed.json.sig"
+          test -s "$FEED/$APK_NAME"
+          test -s "$APK"
+          jq -e --arg version "$VERSION" --arg apk "$APK_NAME" '
+            .schema == 1 and .channel == "preview" and
+            .index.path == "APKINDEX.tar.gz" and
+            any(.packages[]; .id == "webos" and .version == $version and .apk == $apk)
+          ' "$FEED/feed.json" >/dev/null
+          openssl dgst -sha256 -verify keys/webos-repository-public.pem \
+            -signature "$FEED/feed.json.sig" "$FEED/feed.json"
+          INDEX_SHA256="$(jq -er '.index.sha256' "$FEED/feed.json")"
+          INDEX_SIZE="$(jq -er '.index.size' "$FEED/feed.json")"
+          test "$(sha256sum "$FEED/APKINDEX.tar.gz" | cut -d ' ' -f 1)" = "$INDEX_SHA256"
+          test "$(stat -c '%s' "$FEED/APKINDEX.tar.gz")" = "$INDEX_SIZE"
+          APK_SHA256="$(jq -er --arg version "$VERSION" '.packages[] | select(.id == "webos" and .version == $version) | .sha256' "$FEED/feed.json")"
+          APK_SIZE="$(jq -er --arg version "$VERSION" '.packages[] | select(.id == "webos" and .version == $version) | .size' "$FEED/feed.json")"
+          test "$(sha256sum "$APK" | cut -d ' ' -f 1)" = "$APK_SHA256"
+          test "$(stat -c '%s' "$APK")" = "$APK_SIZE"
+          cmp "$APK" "$FEED/$APK_NAME"
+
+      - name: Publish package feed to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: package-artifact/repository
+          destination_dir: .
+          commit_message: "Publish webOS integration preview feed"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          target_commitish: main
+          generate_release_notes: true
+          files: package-artifact/integrations/couch-integration-webos-${{ needs.build.outputs.version }}-r0.apk
