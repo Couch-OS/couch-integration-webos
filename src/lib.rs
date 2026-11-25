@@ -28,7 +28,6 @@ const PAIR_BUDGET: Duration = Duration::from_secs(85);
 const PAIR_POLL_MS: u32 = 1500;
 const CERTIFICATE_CHANGED: &str = "The LG TV certificate changed; pair again";
 
-mod pointer_diagnostics;
 mod pointer_worker;
 
 use pointer_worker::{PointerWorker, WorkerError};
@@ -306,18 +305,10 @@ impl WebOsTv {
     }
 
     fn connect_pointer_worker(&mut self) -> Result<()> {
-        let request_started = Instant::now();
-        pointer_diagnostics::record("requesting pointer socket over SSAP");
         let response = self.request(
             "ssap://com.webos.service.networkinput/getPointerInputSocket",
             json!({}),
-        );
-        pointer_diagnostics::record(&format!(
-            "SSAP pointer socket request result={} elapsed_ms={}",
-            if response.is_ok() { "ok" } else { "error" },
-            request_started.elapsed().as_millis()
-        ));
-        let response = response?;
+        )?;
         let raw = response["socketPath"].as_str().ok_or(Error::Protocol)?;
         let (pointer, host, port) = endpoint(raw)?;
         let (control, own_host, own_port) = endpoint(&self.url)?;
@@ -325,23 +316,13 @@ impl WebOsTv {
             return Err(Error::Protocol);
         }
 
-        let connect_started = Instant::now();
-        pointer_diagnostics::record("connecting pointer WebSocket");
-        let pointer = connect_socket(raw, self.pin.clone(), IO_TIMEOUT);
-        pointer_diagnostics::record(&format!(
-            "pointer WebSocket connect result={} elapsed_ms={}",
-            if pointer.is_ok() { "ok" } else { "error" },
-            connect_started.elapsed().as_millis()
-        ));
-        let worker = PointerWorker::spawn(pointer?).map_err(|_| Error::Transport)?;
+        let pointer = connect_socket(raw, self.pin.clone(), IO_TIMEOUT)?;
+        let worker = PointerWorker::spawn(pointer).map_err(|_| Error::Transport)?;
         self.pointer = Some(worker);
-        pointer_diagnostics::record("pointer worker attached");
         Ok(())
     }
 
     fn button(&mut self, name: &str) -> Result<()> {
-        pointer_diagnostics::record(&format!("button start name={name}"));
-
         // The worker continuously services incoming frames while the main
         // thread remains the sole owner of DeviceClient and the SSAP socket.
         // If it is already known to have stopped, replace it before sending.
@@ -350,7 +331,6 @@ impl WebOsTv {
             .as_ref()
             .is_some_and(PointerWorker::is_finished)
         {
-            pointer_diagnostics::record("pointer worker already stopped; discarding it");
             self.pointer = None;
         }
         if self.pointer.is_none() {
@@ -359,25 +339,14 @@ impl WebOsTv {
 
         let result = self.pointer.as_ref().ok_or(Error::Transport)?.button(name);
         match result {
-            Ok(()) => {
-                pointer_diagnostics::record(&format!("pointer button send succeeded name={name}"));
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(WorkerError::StoppedBeforeSend) => {
                 // The worker confirms the command was not accepted. Replacing
                 // the socket and sending once is safe in this narrow case.
-                pointer_diagnostics::record(
-                    "pointer worker stopped before accepting button; reconnecting",
-                );
                 self.pointer = None;
                 self.connect_pointer_worker()?;
                 match self.pointer.as_ref().ok_or(Error::Transport)?.button(name) {
-                    Ok(()) => {
-                        pointer_diagnostics::record(&format!(
-                            "pointer button send succeeded after safe reconnect name={name}"
-                        ));
-                        Ok(())
-                    }
+                    Ok(()) => Ok(()),
                     Err(WorkerError::InvalidButton) => {
                         self.pointer = None;
                         Err(Error::Configuration)
@@ -385,9 +354,6 @@ impl WebOsTv {
                     Err(_) => {
                         // Once queued to the replacement worker, delivery is
                         // uncertain. Drop it and never attempt another replay.
-                        pointer_diagnostics::record(
-                            "replacement pointer button failed; not retrying",
-                        );
                         self.pointer = None;
                         Err(Error::Transport)
                     }
@@ -398,9 +364,7 @@ impl WebOsTv {
                 Err(Error::Configuration)
             }
             Err(WorkerError::Busy | WorkerError::Transport) => {
-                pointer_diagnostics::record(
-                    "pointer worker button result uncertain; dropping worker without replay",
-                );
+                // The command may have been delivered; never replay it.
                 self.pointer = None;
                 Err(Error::Transport)
             }
@@ -461,7 +425,6 @@ impl DeviceClient for WebOsTv {
 
     fn connect_with(settings: &Settings, credential: Option<&Credential>) -> SdkResult<Self> {
         settings.validate()?;
-        pointer_diagnostics::reset();
         let secure = endpoint(&settings.url)
             .map(|(url, _, _)| url.scheme() == "wss")
             .map_err(SdkError::from)?;
